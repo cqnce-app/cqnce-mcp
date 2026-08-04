@@ -1,0 +1,42 @@
+{
+  "name": "@cqnce/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server exposing cQnce human-in-the-loop authorization as AI-callable tools",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "cqnce-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "@types/node": "^20.0.0"
+  },
+  "keywords": [
+    "cqnce",
+    "mcp",
+    "model-context-protocol",
+    "human-in-the-loop",
+    "authorization"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cqnce-app/cqnce-mcp.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

@@ -48,6 +48,39 @@ Add to `.cursor/mcp.json` in your project (or the global `~/.cursor/mcp.json`):
 CQNCE_API_KEY=your-project-api-key npx @cqnce/mcp-server
 ```
 
+### Cloud agents (Streamable HTTP / remote MCP)
+
+For cloud-hosted agents that cannot run local processes, use the cQnce MCP Worker deployed on Cloudflare Workers. It speaks the [MCP Streamable HTTP transport](https://spec.modelcontextprotocol.io/specification/2025-03-26/basic/transports/#streamable-http) and is stateless — every request authenticates with your API key.
+
+Configure your cloud agent framework to connect to:
+
+```
+https://mcp.cqnce.app/mcp
+Authorization: Bearer <your-project-api-key>
+```
+
+Example (Claude API with MCP):
+
+```json
+{
+  "type": "url",
+  "url": "https://mcp.cqnce.app/mcp",
+  "name": "cqnce",
+  "authorization_token": "your-project-api-key"
+}
+```
+
+#### Self-hosting
+
+The Worker source is in this repository. Deploy your own instance to Cloudflare Workers:
+
+```bash
+npm install
+npx wrangler deploy
+```
+
+Set `CQNCE_BASE_URL` in the Cloudflare dashboard if you use a private cQnce deployment (defaults to `https://api.cqnce.app`).
+
 ## Configuration
 
 | Variable | Required | Description |

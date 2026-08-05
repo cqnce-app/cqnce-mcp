@@ -1,0 +1,5 @@
+{
+  "name": "cqnce-mcp",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-01-01"
+}

@@ -61,13 +61,25 @@ Authorization: Bearer <your-project-api-key>
 
 Example (Claude API with MCP):
 
-```json
-{
-  "type": "url",
-  "url": "https://mcp.cqnce.app/mcp",
-  "name": "cqnce",
-  "authorization_token": "your-project-api-key"
-}
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+response = client.beta.messages.create(
+    model="claude-opus-4-5",
+    max_tokens=1024,
+    mcp_servers=[
+        {
+            "type": "url",
+            "url": "https://mcp.cqnce.app/mcp",
+            "name": "cqnce",
+            "authorization_token": "your-project-api-key",
+        }
+    ],
+    messages=[{"role": "user", "content": "..."}],
+    betas=["mcp-client-2025-04-04"],
+)
 ```
 
 #### Self-hosting

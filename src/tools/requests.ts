@@ -253,26 +253,7 @@ export function registerRequestTools(server: McpServer, client: CqnceApiClient):
     async (input) => {
       const auth = client.hasApiKey() ? 'apiKey' : 'admin';
       const { tags, ...rest } = input;
-      const query: Record<string, string | number | boolean | undefined> = { ...rest };
-
-      if (tags && tags.length > 0) {
-        const url = new URL(`${client.baseUrl}/v1/requests`);
-        for (const [k, v] of Object.entries(query)) {
-          if (v !== undefined) url.searchParams.set(k, String(v));
-        }
-        for (const t of tags) url.searchParams.append('tags', t);
-        const apiKey = process.env['CQNCE_API_KEY'];
-        const adminToken = process.env['CQNCE_ADMIN_TOKEN'];
-        const headers: Record<string, string> = auth === 'apiKey' && apiKey
-          ? { 'x-api-key': apiKey }
-          : { 'Authorization': 'Bearer ' + (adminToken ?? '') };
-        const res = await fetch(url.toString(), { headers });
-        const text = await res.text();
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${text}`);
-        return { content: [{ type: 'text' as const, text }] };
-      }
-
-      const result = await client.get('/v1/requests', query, auth);
+      const result = await client.get('/v1/requests', { ...rest, tags }, auth);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
@@ -299,54 +280,4 @@ export function registerRequestTools(server: McpServer, client: CqnceApiClient):
     },
   );
 
-  server.tool(
-    'query_request_logs',
-    'Query the event-level audit log for authorization requests. ' +
-    'Returns routing events, timeouts, and decision events for debugging and compliance.',
-    {
-      requestId: z
-        .string()
-        .optional()
-        .describe('Filter logs for a specific request ID.'),
-      projectId: z
-        .string()
-        .optional()
-        .describe('Filter logs for a specific project ID.'),
-      event: z
-        .string()
-        .optional()
-        .describe('Filter by event type (e.g. ROUTED, RESPONDED, RESOLVED, EXPIRED).'),
-      search: z
-        .string()
-        .optional()
-        .describe('Full-text search across request IDs and log details.'),
-      startDate: z
-        .string()
-        .optional()
-        .describe('ISO 8601 start date filter.'),
-      endDate: z
-        .string()
-        .optional()
-        .describe('ISO 8601 end date filter.'),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(5000)
-        .optional()
-        .describe('Maximum number of log entries to return (default: 50).'),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe('Pagination offset (default: 0).'),
-    },
-    async (input) => {
-      const result = await client.get('/v1/logs', input as Record<string, string | number | boolean | undefined>, 'admin');
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      };
-    },
-  );
 }

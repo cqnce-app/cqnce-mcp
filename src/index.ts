@@ -7,11 +7,11 @@
  * approval before performing risky or irreversible actions.
  *
  * Configuration (environment variables):
- *   CQNCE_BASE_URL      — Required. Base URL of the cQnce backend (e.g. https://api.example.com)
- *   CQNCE_API_KEY       — Project API key. Required for request submission / monitoring tools.
- *   CQNCE_ADMIN_TOKEN   — Tenant admin JWT. Required for project / agent / team / callback management tools.
+ *   CQNCE_API_KEY       — Required. Project API key from https://cqnce.app.
+ *   CQNCE_BASE_URL      — Optional. Defaults to https://api.cqnce.app.
+ *   CQNCE_ADMIN_TOKEN   — Optional. Tenant admin JWT for project/agent/team management tools.
  *
- * Transport: stdio (default for local MCP servers; compatible with Claude Desktop, Cursor, Copilot).
+ * Transport: stdio (compatible with Claude Desktop, Cursor, Copilot, and any MCP client).
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

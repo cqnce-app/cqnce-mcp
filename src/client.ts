@@ -42,7 +42,7 @@ export class CqnceApiClient {
 
   async get<T = Record<string, unknown>>(
     path: string,
-    query: Record<string, string | number | boolean | undefined> = {},
+    query: Record<string, string | number | boolean | string[] | undefined> = {},
     auth: AuthMode = 'apiKey',
   ): Promise<T> {
     const url = this.buildUrl(path, query);
@@ -89,10 +89,15 @@ export class CqnceApiClient {
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
-  private buildUrl(path: string, query: Record<string, string | number | boolean | undefined> = {}): string {
+  private buildUrl(path: string, query: Record<string, string | number | boolean | string[] | undefined> = {}): string {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [k, v] of Object.entries(query)) {
-      if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+      if (v === undefined || v === null) continue;
+      if (Array.isArray(v)) {
+        for (const item of v) url.searchParams.append(k, item);
+      } else {
+        url.searchParams.set(k, String(v));
+      }
     }
     return url.toString();
   }
@@ -131,10 +136,7 @@ export class CqnceApiClient {
 
 /** Build a client from environment variables. */
 export function clientFromEnv(): CqnceApiClient {
-  const baseUrl = process.env['CQNCE_BASE_URL'];
-  if (!baseUrl) {
-    throw new Error('CQNCE_BASE_URL environment variable is required');
-  }
+  const baseUrl = process.env['CQNCE_BASE_URL'] ?? 'https://api.cqnce.app';
   return new CqnceApiClient({
     baseUrl,
     apiKey: process.env['CQNCE_API_KEY'],

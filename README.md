@@ -118,13 +118,44 @@ Set `CQNCE_BASE_URL` in the Cloudflare dashboard if you use a private cQnce depl
 
 Project management, routing rule configuration, agent/team management, and webhook callbacks.
 
+## Recommended system prompt
+
+When integrating Claude via the Anthropic API, add this system prompt to enforce the authorization policy automatically — without relying on the user to request it each time:
+
+```
+You have access to the cQnce tool for human-in-the-loop authorization.
+
+ALWAYS call wait_for_approval BEFORE performing any action that is:
+- Destructive or irreversible (deleting data, dropping tables, removing files)
+- Affecting production systems (deployments, database migrations, config changes)
+- Financial (payments, transfers, subscription changes)
+- Involving credentials or access control (creating/revoking API keys, changing permissions)
+
+In the approval payload, include:
+- "action": what you are about to do
+- "target": what resource is affected
+- "reason": why this action is needed
+- "risk": what happens if approved or rejected
+- "attachments": (optional) list of supporting files as { name, contentType, data (base64) }
+  — include logs, diffs, screenshots, or any evidence that helps the reviewer decide
+
+When the response status is "REJECTED":
+- Read the rejection reason carefully.
+- If the reason identifies missing information or context, gather that information,
+  enrich the payload (or attachments), and resubmit via wait_for_approval.
+- Only give up if the rejection reason makes clear the action itself is not permitted.
+
+Proceed ONLY if the returned status is "APPROVED".
+If "EXPIRED" or the rejection reason leaves no actionable path forward, stop and explain.
+```
+
 ## Example
 
 Once configured, you can tell Claude:
 
 > "Before deleting the production database, ask for human approval via cQnce."
 
-Claude will call `wait_for_approval` with the action details, pause until a human approves or rejects from the cQnce mobile app, and only proceed if the status is `APPROVED`.
+Claude will call `wait_for_approval` with the action details, pause until a human approves or rejects from the cQnce mobile app, and only proceed if the status is `APPROVED`. If rejected with a reason (e.g. "missing rollback plan"), Claude will gather that information and resubmit automatically.
 
 ## Requirements
 

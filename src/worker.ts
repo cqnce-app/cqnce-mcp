@@ -60,8 +60,17 @@ export default {
     const cqnceBase = env.CQNCE_BASE_URL ?? 'https://api.cqnce.app';
 
     // ── Health ──────────────────────────────────────────────────────────────
-    if (pathname === '/' || pathname === '/health') {
+    // Root path: health check unless it looks like an MCP request (has Bearer or is POST/DELETE)
+    if (pathname === '/health') {
       return Response.json({ status: 'ok', server: 'cqnce-mcp' });
+    }
+    if (pathname === '/') {
+      const hasMcpMethod = request.method === 'POST' || request.method === 'DELETE';
+      const hasBearer = (request.headers.get('Authorization') ?? '').startsWith('Bearer ');
+      if (!hasMcpMethod && !hasBearer) {
+        return Response.json({ status: 'ok', server: 'cqnce-mcp' });
+      }
+      // Fall through to MCP handler below
     }
 
     // ── Authorization server metadata (RFC 8414) ────────────────────────────
@@ -200,7 +209,8 @@ export default {
     }
 
     // ── MCP endpoint ────────────────────────────────────────────────────────
-    if (pathname.startsWith('/mcp')) {
+    // Handle both /mcp and / (some clients omit the path suffix)
+    if (pathname.startsWith('/mcp') || pathname === '/') {
       const authHeader = request.headers.get('Authorization') ?? '';
       if (!authHeader.startsWith('Bearer ')) {
         return Response.json(

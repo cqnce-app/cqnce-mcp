@@ -15,6 +15,9 @@ export interface ClientOptions {
   apiKey?: string;
   /** Tenant admin JWT (for admin operations). */
   adminToken?: string;
+  /** OAuth client credentials (alternative to apiKey). */
+  clientId?: string;
+  clientSecret?: string;
 }
 
 export type AuthMode = 'apiKey' | 'admin';
@@ -23,16 +26,20 @@ export class CqnceApiClient {
   readonly baseUrl: string;
   private readonly apiKey?: string;
   private readonly adminToken?: string;
+  private readonly clientId?: string;
+  private readonly clientSecret?: string;
 
   constructor(options: ClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
     this.adminToken = options.adminToken;
+    this.clientId = options.clientId;
+    this.clientSecret = options.clientSecret;
   }
 
-  /** Whether the client can perform request-level operations (needs API key). */
+  /** Whether the client can perform request-level operations (API key or client credentials). */
   hasApiKey(): boolean {
-    return !!this.apiKey;
+    return !!(this.apiKey || (this.clientId && this.clientSecret));
   }
 
   /** Whether the client can perform admin-level operations (needs admin token). */
@@ -105,8 +112,14 @@ export class CqnceApiClient {
   private headers(auth: AuthMode): Headers {
     const h = new Headers();
     if (auth === 'apiKey') {
-      if (!this.apiKey) throw new Error('CQNCE_API_KEY is required for this operation');
-      h.set('x-api-key', this.apiKey);
+      if (this.clientId && this.clientSecret) {
+        h.set('x-client-id', this.clientId);
+        h.set('x-client-secret', this.clientSecret);
+      } else if (this.apiKey) {
+        h.set('x-api-key', this.apiKey);
+      } else {
+        throw new Error('CQNCE_API_KEY or client credentials are required for this operation');
+      }
     } else {
       if (!this.adminToken) throw new Error('CQNCE_ADMIN_TOKEN is required for this operation');
       h.set('Authorization', 'Bearer ' + this.adminToken);

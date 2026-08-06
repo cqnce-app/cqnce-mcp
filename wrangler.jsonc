@@ -3,10 +3,7 @@
   "main": "src/worker.ts",
   "compatibility_date": "2025-01-01",
   "vars": {
-    // Override in the Cloudflare dashboard — do NOT put real values here
+    // Override in the Cloudflare dashboard if using a private cQnce deployment
     "CQNCE_BASE_URL": "https://api.cqnce.app"
   }
-  // Set WORKER_JWT_SECRET as an encrypted secret via:
-  //   npx wrangler secret put WORKER_JWT_SECRET
-  // or in the Cloudflare dashboard under Settings > Variables > Secret variables
 }

@@ -15,9 +15,11 @@ export interface ClientOptions {
   apiKey?: string;
   /** Tenant admin JWT (for admin operations). */
   adminToken?: string;
-  /** OAuth client credentials (alternative to apiKey). */
+  /** OAuth client credentials — alternative to apiKey, used as x-client-id/x-client-secret. */
   clientId?: string;
   clientSecret?: string;
+  /** Short-lived OAuth JWT issued by POST /v1/oauth/token — sent as Authorization: Bearer. */
+  oauthToken?: string;
 }
 
 export type AuthMode = 'apiKey' | 'admin';
@@ -28,6 +30,7 @@ export class CqnceApiClient {
   private readonly adminToken?: string;
   private readonly clientId?: string;
   private readonly clientSecret?: string;
+  private readonly oauthToken?: string;
 
   constructor(options: ClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
@@ -35,11 +38,12 @@ export class CqnceApiClient {
     this.adminToken = options.adminToken;
     this.clientId = options.clientId;
     this.clientSecret = options.clientSecret;
+    this.oauthToken = options.oauthToken;
   }
 
-  /** Whether the client can perform request-level operations (API key or client credentials). */
+  /** Whether the client can perform request-level operations. */
   hasApiKey(): boolean {
-    return !!(this.apiKey || (this.clientId && this.clientSecret));
+    return !!(this.oauthToken || this.apiKey || (this.clientId && this.clientSecret));
   }
 
   /** Whether the client can perform admin-level operations (needs admin token). */
@@ -112,13 +116,15 @@ export class CqnceApiClient {
   private headers(auth: AuthMode): Headers {
     const h = new Headers();
     if (auth === 'apiKey') {
-      if (this.clientId && this.clientSecret) {
+      if (this.oauthToken) {
+        h.set('Authorization', 'Bearer ' + this.oauthToken);
+      } else if (this.clientId && this.clientSecret) {
         h.set('x-client-id', this.clientId);
         h.set('x-client-secret', this.clientSecret);
       } else if (this.apiKey) {
         h.set('x-api-key', this.apiKey);
       } else {
-        throw new Error('CQNCE_API_KEY or client credentials are required for this operation');
+        throw new Error('No project credentials available for this operation');
       }
     } else {
       if (!this.adminToken) throw new Error('CQNCE_ADMIN_TOKEN is required for this operation');

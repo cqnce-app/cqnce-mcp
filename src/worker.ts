@@ -210,9 +210,23 @@ export default {
       const client = new CqnceApiClient(clientOptions);
       registerRequestTools(server, client);
 
-      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       await server.connect(transport);
-      return transport.handleRequest(request);
+
+      // The MCP transport requires both application/json and text/event-stream in
+      // the Accept header. Some MCP clients (including Claude's servers) may omit
+      // text/event-stream, causing the transport to return 406. We normalise the
+      // header here so the transport always sees the full required value.
+      const accept = request.headers.get('accept') ?? '';
+      const mcpRequest = accept.includes('text/event-stream')
+        ? request
+        : new Request(request.url, {
+            method: request.method,
+            headers: (() => { const h = new Headers(request.headers); h.set('accept', 'application/json, text/event-stream'); return h; })(),
+            body: request.body,
+          });
+
+      return transport.handleRequest(mcpRequest);
     }
 
     return new Response('Not found', { status: 404 });

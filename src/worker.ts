@@ -142,16 +142,6 @@ export default {
         const redirectUri  = params.get('redirect_uri');
         const clientSecret = params.get('client_secret') ?? extractBasicSecret(request.headers.get('Authorization'));
 
-        // Temporary debug log — remove after diagnosing
-        console.log('[oauth/token] params:', JSON.stringify({
-          hasCode: !!code,
-          hasVerifier: !!codeVerifier,
-          hasSecret: !!clientSecret,
-          hasRedirectUri: !!redirectUri,
-          allKeys: [...params.keys()],
-          authHeader: request.headers.get('Authorization')?.slice(0, 10) ?? 'none',
-        }));
-
         if (!code || !codeVerifier) {
           return Response.json({ error: 'invalid_request', error_description: 'code and code_verifier required' }, { status: 400 });
         }

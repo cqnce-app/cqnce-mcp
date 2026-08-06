@@ -158,6 +158,18 @@ export default {
       });
     }
 
+    // ── Protected resource metadata (RFC 9728) ──────────────────────────────
+    // Claude uses this to verify that the token it received is valid for this
+    // resource. Without this endpoint, Claude shows "credentials rejected."
+    if (pathname === '/.well-known/oauth-protected-resource') {
+      return Response.json({
+        resource: origin,
+        authorization_servers: [origin],
+        bearer_methods_supported: ['header'],
+        scopes_supported: ['mcp'],
+      });
+    }
+
     // ── Authorization endpoint ──────────────────────────────────────────────
     if (pathname === '/authorize') {
 

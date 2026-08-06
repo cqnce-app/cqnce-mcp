@@ -6,7 +6,7 @@
     // Override in Cloudflare dashboard if using a private cQnce deployment
     "CQNCE_BASE_URL": "https://api.cqnce.app"
   },
-  // KV namespace binding "OAUTH_CODES" must be configured in Cloudflare dashboard:
-  // Workers & Pages → cqnce-mcp → Settings → Variables → KV Namespace Bindings
-  // Variable: OAUTH_CODES → Namespace: (create "cqnce-mcp-oauth-codes" first)
+  "kv_namespaces": [
+    { "binding": "OAUTH_CODES", "id": "ebb20bf200b042769c1cf0a4b79e2c73" }
+  ]
 }

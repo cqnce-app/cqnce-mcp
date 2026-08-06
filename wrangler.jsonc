@@ -6,15 +6,7 @@
     // Override in Cloudflare dashboard if using a private cQnce deployment
     "CQNCE_BASE_URL": "https://api.cqnce.app"
   },
-  "kv_namespaces": [
-    {
-      // Create with: npx wrangler kv namespace create OAUTH_CODES
-      // then replace the id below with the one returned
-      "binding": "OAUTH_CODES",
-      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
-    }
-  ]
-  // Set WORKER_JWT_SECRET as an encrypted secret:
-  //   npx wrangler secret put WORKER_JWT_SECRET
-  // or via Cloudflare dashboard → Settings → Variables → Secret variables
+  // KV namespace binding "OAUTH_CODES" must be configured in Cloudflare dashboard:
+  // Workers & Pages → cqnce-mcp → Settings → Variables → KV Namespace Bindings
+  // Variable: OAUTH_CODES → Namespace: (create "cqnce-mcp-oauth-codes" first)
 }

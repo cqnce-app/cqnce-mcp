@@ -80,7 +80,7 @@ export default {
         issuer: origin,
         authorization_endpoint: `${origin}/authorize`,
         token_endpoint: `${origin}/oauth/token`,
-        grant_types_supported: ['authorization_code', 'client_credentials'],
+        grant_types_supported: ['authorization_code', 'client_credentials', 'refresh_token'],
         response_types_supported: ['code'],
         code_challenge_methods_supported: ['S256'],
         token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic', 'none'],
@@ -176,10 +176,46 @@ export default {
           return Response.json({ error: 'invalid_client', error_description: 'Invalid client credentials' }, { status: 401 });
         }
 
-        return new Response(await tokenRes.text(), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
+        // Issue a refresh token so Claude can silently renew when the access token expires.
+        // We store the client credentials (not just the ID) so the refresh handler can
+        // re-call the backend without requiring the client to re-send the secret.
+        const refreshToken = crypto.randomUUID();
+        await env.OAUTH_CODES.put(
+          `rt:${refreshToken}`,
+          JSON.stringify({ clientId: stored.clientId, clientSecret }),
+          { expirationTtl: 30 * 24 * 3600 }, // 30 days
+        );
+
+        const tokenBody = await tokenRes.json() as Record<string, unknown>;
+        return Response.json({ ...tokenBody, refresh_token: refreshToken });
+      }
+
+      // Refresh Token — Claude uses this automatically when the access token expires
+      if (grantType === 'refresh_token') {
+        const refreshToken = params.get('refresh_token');
+        if (!refreshToken) {
+          return Response.json({ error: 'invalid_request', error_description: 'refresh_token required' }, { status: 400 });
+        }
+
+        const raw = await env.OAUTH_CODES.get(`rt:${refreshToken}`);
+        if (!raw) {
+          return Response.json({ error: 'invalid_grant', error_description: 'Refresh token not found or expired' }, { status: 400 });
+        }
+        const { clientId, clientSecret } = JSON.parse(raw) as { clientId: string; clientSecret: string };
+
+        const tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
         });
+
+        if (!tokenRes.ok) {
+          await env.OAUTH_CODES.delete(`rt:${refreshToken}`);
+          return Response.json({ error: 'invalid_grant', error_description: 'Client credentials are no longer valid' }, { status: 400 });
+        }
+
+        const tokenBody = await tokenRes.json() as Record<string, unknown>;
+        return Response.json({ ...tokenBody, refresh_token: refreshToken });
       }
 
       // Client Credentials — proxied directly to backend (for API/testing)

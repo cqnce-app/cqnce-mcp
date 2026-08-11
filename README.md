@@ -6,7 +6,42 @@ Connect Claude, Cursor, GitHub Copilot, or any MCP-compatible client to cQnce so
 
 ## Quick start
 
-### Claude Desktop
+```bash
+npx @cqnce/mcp-server
+```
+
+Set the `CQNCE_API_KEY` environment variable to your project API key before running.
+
+## Approval modes
+
+### Mode 1 — Agent-requested approval
+
+The agent calls `wait_for_approval` or `submit_authorization_request` itself, as instructed in the system prompt or via tool discovery. This is the easiest integration path and works well for supervised workflows.
+
+**Risk:** a compromised or misconfigured agent may simply not call the tool.
+
+### Mode 2 — Enforced approval gate (recommended for production)
+
+The host application or executor intercepts every sensitive tool call _before_ it runs and requires a prior cQnce approval, regardless of what the agent requested. The gate lives outside the model context — the agent cannot skip it.
+
+This is a real security boundary. Build enterprise and compliance-sensitive integrations on this mode.
+
+```python
+# Example: host-side interception (framework-agnostic)
+HIGH_RISK_TOOLS = {"send_payment", "deploy_production", "delete_customer"}
+
+def execute_tool_call(tool_call):
+    if tool_call.name not in HIGH_RISK_TOOLS:
+        return run_tool(tool_call)
+    decision = cqnce.submit_and_wait(
+        payload={"action": tool_call.name, "parameters": tool_call.arguments},
+        timeout_seconds=300,
+    )
+    if decision["status"] != "APPROVED":
+        return {"error": "not_authorized", "status": decision["status"]}
+    return run_tool(tool_call)
+```
+
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 

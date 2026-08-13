@@ -1,6 +1,6 @@
 {
   "name": "@cqnce/mcp-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server exposing cQnce human-in-the-loop authorization as AI-callable tools",
   "license": "MIT",
   "type": "module",

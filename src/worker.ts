@@ -291,11 +291,11 @@ export default {
       }
       const stored = JSON.parse(raw) as StoredCode;
 
-      // Verify the API key against the cQnce backend
-      const verifyRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `grant_type=client_credentials&client_secret=${encodeURIComponent(apiKey)}`,
+      // Verify the API key against the cQnce backend.
+      // The project API key is validated via x-api-key header, not the OAuth token endpoint.
+      // GET /v1/requests returns 401 for invalid keys, 200 (empty list) for valid ones.
+      const verifyRes = await fetch(`${cqnceBase}/v1/requests?limit=1`, {
+        headers: { 'x-api-key': apiKey },
       });
 
       if (!verifyRes.ok) {
@@ -346,16 +346,10 @@ export default {
         await env.OAUTH_CODES.delete(code); // one-time use
 
         // ── Flow B/C: API key was bound during /authorize/bind ──────────────
+        // The API key is used directly as access_token — the MCP endpoint already
+        // handles raw API keys by forwarding them as x-api-key to the backend.
+        // No JWT exchange needed.
         if (stored.apiKey) {
-          const tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `grant_type=client_credentials&client_secret=${encodeURIComponent(stored.apiKey)}`,
-          });
-          if (!tokenRes.ok) {
-            return Response.json({ error: 'invalid_client', error_description: 'API key no longer valid' }, { status: 401 });
-          }
-
           const refreshToken = crypto.randomUUID();
           await env.OAUTH_CODES.put(
             `rt:${refreshToken}`,
@@ -363,8 +357,11 @@ export default {
             { expirationTtl: 30 * 24 * 3600 },
           );
 
-          const tokenBody = await tokenRes.json() as Record<string, unknown>;
-          return Response.json({ ...tokenBody, refresh_token: refreshToken });
+          return Response.json({
+            access_token: stored.apiKey,
+            token_type: 'bearer',
+            refresh_token: refreshToken,
+          });
         }
 
         // ── Flow A: client_secret sent by client (Claude.ai) ───────────────
@@ -406,22 +403,21 @@ export default {
         }
         const rt = JSON.parse(raw) as StoredRefreshToken;
 
-        let tokenRes: Response;
+        // Flow B/C: re-issue the same API key as access_token (no expiry)
         if (rt.apiKey) {
-          // Flow B/C
-          tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `grant_type=client_credentials&client_secret=${encodeURIComponent(rt.apiKey)}`,
-          });
-        } else {
-          // Flow A
-          tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `grant_type=client_credentials&client_id=${encodeURIComponent(rt.clientId)}&client_secret=${encodeURIComponent(rt.clientSecret ?? '')}`,
+          return Response.json({
+            access_token: rt.apiKey,
+            token_type: 'bearer',
+            refresh_token: refreshToken,
           });
         }
+
+        // Flow A: re-exchange client credentials for a fresh JWT
+        const tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `grant_type=client_credentials&client_id=${encodeURIComponent(rt.clientId)}&client_secret=${encodeURIComponent(rt.clientSecret ?? '')}`,
+        });
 
         if (!tokenRes.ok) {
           await env.OAUTH_CODES.delete(`rt:${refreshToken}`);

@@ -1,22 +1,29 @@
 /**
  * cQnce MCP Worker — Cloudflare Workers deployment
  *
- * OAuth 2.0 Authorization Code + PKCE (no user-facing form):
+ * Supports three authentication flows:
  *
- *   User configures in Claude.ai → Add connector:
+ * ── Flow A: Legacy (Claude.ai) ─────────────────────────────────────────────
+ *   User configures Claude.ai manually:
  *     - Remote MCP server URL: https://mcp.cqnce.app/mcp
  *     - OAuth Client ID:       <cQnce project client_id>
  *     - OAuth Client Secret:   <cQnce project client_secret>
+ *   Claude runs PKCE Authorization Code; client_secret is passed at token
+ *   exchange and forwarded to the cQnce backend. Fully backward-compatible.
  *
- *   Claude then runs the full Authorization Code + PKCE flow automatically:
- *     1. GET  /authorize?client_id=<cid>&code_challenge=... → immediate redirect
- *     2. POST /oauth/token  (code + code_verifier + client_secret)
- *            → Worker verifies PKCE, calls api.cqnce.app/v1/oauth/token, returns JWT
- *     3. POST /mcp  Authorization: Bearer <JWT>
- *            → Worker passes JWT as Bearer to cQnce backend
+ * ── Flow B: DCR — Dynamic Client Registration (RFC 7591) ──────────────────
+ *   Used by Codex "Automatic" / "Dynamic client registration" modes:
+ *     1. POST /register       → ephemeral client_id (public client, no secret)
+ *     2. GET  /authorize      → serves HTML form asking for cQnce API key
+ *     3. POST /authorize/bind → verifies API key, completes OAuth redirect
+ *     4. POST /oauth/token    → uses stored API key to obtain JWT
+ *
+ * ── Flow C: CIMD — Client ID Metadata Document ────────────────────────────
+ *   client_id is a URL (https://…/.well-known/oauth-client-metadata).
+ *   Worker fetches the document to get redirect_uris, then follows Flow B.
  *
  * Required KV namespace binding (Cloudflare dashboard → Settings → Bindings):
- *   OAUTH_CODES  — temporary auth code storage (TTL 10 min)
+ *   OAUTH_CODES  — auth codes, DCR clients, refresh tokens (TTL-based)
  *
  * Optional env var:
  *   CQNCE_BASE_URL  — defaults to https://api.cqnce.app
@@ -32,10 +39,28 @@ interface Env {
   OAUTH_CODES: KVNamespace;
 }
 
+/** Stored under key `<code>` (TTL 10 min). */
 interface StoredCode {
   clientId: string;
   codeChallenge: string;
   redirectUri: string;
+  /** Flow B/C (DCR/CIMD): cQnce API key bound during /authorize/bind. */
+  apiKey?: string;
+}
+
+/** Stored under key `dcr:<client_id>` (TTL 24 h). */
+interface StoredDcrClient {
+  redirectUris: string[];
+  clientName?: string;
+}
+
+/** Stored under key `rt:<token>` (TTL 30 d). */
+interface StoredRefreshToken {
+  clientId: string;
+  /** Flow A: cQnce OAuth client secret. */
+  clientSecret?: string;
+  /** Flow B/C: cQnce API key. */
+  apiKey?: string;
 }
 
 // ── PKCE ─────────────────────────────────────────────────────────────────────
@@ -60,7 +85,6 @@ export default {
     const cqnceBase = env.CQNCE_BASE_URL ?? 'https://api.cqnce.app';
 
     // ── Health ──────────────────────────────────────────────────────────────
-    // Root path: health check unless it looks like an MCP request (has Bearer or is POST/DELETE)
     if (pathname === '/health') {
       return Response.json({ status: 'ok', server: 'cqnce-mcp' });
     }
@@ -80,6 +104,7 @@ export default {
         issuer: origin,
         authorization_endpoint: `${origin}/authorize`,
         token_endpoint: `${origin}/oauth/token`,
+        registration_endpoint: `${origin}/register`,
         grant_types_supported: ['authorization_code', 'client_credentials', 'refresh_token'],
         response_types_supported: ['code'],
         code_challenge_methods_supported: ['S256'],
@@ -89,7 +114,6 @@ export default {
     }
 
     // ── Protected resource metadata (RFC 9728) ──────────────────────────────
-    // Claude validates the token against this endpoint after OAuth completes.
     if (pathname === '/.well-known/oauth-protected-resource') {
       return Response.json({
         resource: origin,
@@ -99,17 +123,77 @@ export default {
       });
     }
 
+    // ── DCR: Dynamic Client Registration (RFC 7591) ─────────────────────────
+    // Codex "Automatic" / "DCR" modes POST here to obtain a client_id.
+    // Returns a public client (no client_secret) — credentials are collected
+    // later via the binding form served by /authorize.
+    if (pathname === '/register') {
+      if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+
+      let body: Record<string, unknown>;
+      try {
+        body = await request.json() as Record<string, unknown>;
+      } catch {
+        return Response.json({ error: 'invalid_request', error_description: 'Expected JSON body' }, { status: 400 });
+      }
+
+      const redirectUris = body['redirect_uris'];
+      if (!Array.isArray(redirectUris) || redirectUris.length === 0) {
+        return Response.json(
+          { error: 'invalid_redirect_uri', error_description: 'redirect_uris is required' },
+          { status: 400 },
+        );
+      }
+
+      // Validate all redirect URIs: must be HTTPS or localhost
+      for (const uri of redirectUris as string[]) {
+        try {
+          const u = new URL(uri);
+          const isLocalhost = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+          if (u.protocol !== 'https:' && !isLocalhost) {
+            return Response.json(
+              { error: 'invalid_redirect_uri', error_description: `Redirect URI must be HTTPS or localhost: ${uri}` },
+              { status: 400 },
+            );
+          }
+        } catch {
+          return Response.json(
+            { error: 'invalid_redirect_uri', error_description: `Invalid redirect URI: ${uri}` },
+            { status: 400 },
+          );
+        }
+      }
+
+      const clientId = crypto.randomUUID();
+      const stored: StoredDcrClient = {
+        redirectUris: redirectUris as string[],
+        clientName: typeof body['client_name'] === 'string' ? body['client_name'] : undefined,
+      };
+      await env.OAUTH_CODES.put(`dcr:${clientId}`, JSON.stringify(stored), { expirationTtl: 24 * 3600 });
+
+      return Response.json({
+        client_id: clientId,
+        client_id_issued_at: Math.floor(Date.now() / 1000),
+        token_endpoint_auth_method: 'none',
+        redirect_uris: redirectUris,
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+      }, { status: 201 });
+    }
+
     // ── Authorization endpoint ──────────────────────────────────────────────
-    // Claude sends the project client_id (from the connector's "OAuth Client ID"
-    // field) as the client_id parameter. No user-facing form is needed.
+    // Three sub-cases:
+    //   A. Legacy (Claude.ai): client_id is a real cQnce client_id → immediate redirect
+    //   B. DCR: client_id is a UUID previously registered via POST /register → show form
+    //   C. CIMD: client_id is an HTTPS URL → fetch metadata → validate redirect_uri → show form
     if (pathname === '/authorize') {
       if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405 });
 
       const p = url.searchParams;
-      const clientId    = p.get('client_id') ?? '';
-      const redirectUri = p.get('redirect_uri') ?? '';
+      const clientId      = p.get('client_id') ?? '';
+      const redirectUri   = p.get('redirect_uri') ?? '';
       const codeChallenge = p.get('code_challenge') ?? '';
-      const state       = p.get('state') ?? '';
+      const state         = p.get('state') ?? '';
 
       if (!clientId || !redirectUri || !codeChallenge) {
         return Response.json(
@@ -118,11 +202,111 @@ export default {
         );
       }
 
+      // ── Case C: CIMD — client_id is a metadata URL ──────────────────────
+      if (clientId.startsWith('https://')) {
+        let allowedUris: string[];
+        try {
+          const metaRes = await fetch(clientId, {
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!metaRes.ok) throw new Error(`HTTP ${metaRes.status}`);
+          const meta = await metaRes.json() as Record<string, unknown>;
+          const uris = meta['redirect_uris'];
+          if (!Array.isArray(uris) || uris.length === 0) throw new Error('No redirect_uris in metadata');
+          allowedUris = uris as string[];
+        } catch (err) {
+          return Response.json(
+            { error: 'invalid_client', error_description: `Could not fetch client metadata: ${err}` },
+            { status: 400 },
+          );
+        }
+
+        if (!allowedUris.includes(redirectUri)) {
+          return Response.json(
+            { error: 'invalid_redirect_uri', error_description: 'redirect_uri not in client metadata' },
+            { status: 400 },
+          );
+        }
+
+        const code = crypto.randomUUID();
+        const stored: StoredCode = { clientId, codeChallenge, redirectUri };
+        await env.OAUTH_CODES.put(code, JSON.stringify(stored), { expirationTtl: 600 });
+        return bindingFormResponse(code, state, origin, undefined);
+      }
+
+      // ── Case B: DCR — client_id was registered via POST /register ─────────
+      const dcrRaw = await env.OAUTH_CODES.get(`dcr:${clientId}`);
+      if (dcrRaw) {
+        const dcrClient = JSON.parse(dcrRaw) as StoredDcrClient;
+
+        if (!dcrClient.redirectUris.includes(redirectUri)) {
+          return Response.json(
+            { error: 'invalid_redirect_uri', error_description: 'redirect_uri not registered for this client' },
+            { status: 400 },
+          );
+        }
+
+        const code = crypto.randomUUID();
+        const stored: StoredCode = { clientId, codeChallenge, redirectUri };
+        await env.OAUTH_CODES.put(code, JSON.stringify(stored), { expirationTtl: 600 });
+        return bindingFormResponse(code, state, origin, dcrClient.clientName);
+      }
+
+      // ── Case A: Legacy — immediate redirect (unchanged behaviour) ──────────
       const code = crypto.randomUUID();
       const stored: StoredCode = { clientId, codeChallenge, redirectUri };
       await env.OAUTH_CODES.put(code, JSON.stringify(stored), { expirationTtl: 600 });
 
       const callbackUrl = new URL(redirectUri);
+      callbackUrl.searchParams.set('code', code);
+      if (state) callbackUrl.searchParams.set('state', state);
+      return Response.redirect(callbackUrl.toString(), 302);
+    }
+
+    // ── Binding form submission (Flow B / C) ─────────────────────────────────
+    // User submits their cQnce API key; worker verifies it and completes the redirect.
+    if (pathname === '/authorize/bind') {
+      if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+
+      const contentType = request.headers.get('Content-Type') ?? '';
+      let params: URLSearchParams;
+      if (contentType.includes('application/x-www-form-urlencoded')) {
+        params = new URLSearchParams(await request.text());
+      } else {
+        return new Response('Unsupported Media Type', { status: 415 });
+      }
+
+      const code   = params.get('code') ?? '';
+      const apiKey = params.get('api_key')?.trim() ?? '';
+      const state  = params.get('state') ?? '';
+
+      if (!code || !apiKey) {
+        return bindingFormResponse('', state, origin, undefined, 'API key and authorization code are required.');
+      }
+
+      const raw = await env.OAUTH_CODES.get(code);
+      if (!raw) {
+        return bindingFormResponse('', state, origin, undefined, 'Authorization session expired. Please restart the connection.');
+      }
+      const stored = JSON.parse(raw) as StoredCode;
+
+      // Verify the API key against the cQnce backend
+      const verifyRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `grant_type=client_credentials&client_secret=${encodeURIComponent(apiKey)}`,
+      });
+
+      if (!verifyRes.ok) {
+        return bindingFormResponse(code, state, origin, undefined, 'Invalid API key. Please check and try again.');
+      }
+
+      // Bind the API key to the auth code
+      const updated: StoredCode = { ...stored, apiKey };
+      await env.OAUTH_CODES.put(code, JSON.stringify(updated), { expirationTtl: 600 });
+
+      const callbackUrl = new URL(stored.redirectUri);
       callbackUrl.searchParams.set('code', code);
       if (state) callbackUrl.searchParams.set('state', state);
       return Response.redirect(callbackUrl.toString(), 302);
@@ -135,7 +319,7 @@ export default {
       const params = new URLSearchParams(await request.text());
       const grantType = params.get('grant_type');
 
-      // Authorization Code exchange — Claude sends client_secret here
+      // Authorization Code exchange
       if (grantType === 'authorization_code') {
         const code         = params.get('code');
         const codeVerifier = params.get('code_verifier');
@@ -161,11 +345,33 @@ export default {
 
         await env.OAUTH_CODES.delete(code); // one-time use
 
+        // ── Flow B/C: API key was bound during /authorize/bind ──────────────
+        if (stored.apiKey) {
+          const tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `grant_type=client_credentials&client_secret=${encodeURIComponent(stored.apiKey)}`,
+          });
+          if (!tokenRes.ok) {
+            return Response.json({ error: 'invalid_client', error_description: 'API key no longer valid' }, { status: 401 });
+          }
+
+          const refreshToken = crypto.randomUUID();
+          await env.OAUTH_CODES.put(
+            `rt:${refreshToken}`,
+            JSON.stringify({ clientId: stored.clientId, apiKey: stored.apiKey } satisfies StoredRefreshToken),
+            { expirationTtl: 30 * 24 * 3600 },
+          );
+
+          const tokenBody = await tokenRes.json() as Record<string, unknown>;
+          return Response.json({ ...tokenBody, refresh_token: refreshToken });
+        }
+
+        // ── Flow A: client_secret sent by client (Claude.ai) ───────────────
         if (!clientSecret) {
           return Response.json({ error: 'invalid_client', error_description: 'client_secret required' }, { status: 401 });
         }
 
-        // Exchange credentials for a backend JWT
         const tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -176,21 +382,18 @@ export default {
           return Response.json({ error: 'invalid_client', error_description: 'Invalid client credentials' }, { status: 401 });
         }
 
-        // Issue a refresh token so Claude can silently renew when the access token expires.
-        // We store the client credentials (not just the ID) so the refresh handler can
-        // re-call the backend without requiring the client to re-send the secret.
         const refreshToken = crypto.randomUUID();
         await env.OAUTH_CODES.put(
           `rt:${refreshToken}`,
-          JSON.stringify({ clientId: stored.clientId, clientSecret }),
-          { expirationTtl: 30 * 24 * 3600 }, // 30 days
+          JSON.stringify({ clientId: stored.clientId, clientSecret } satisfies StoredRefreshToken),
+          { expirationTtl: 30 * 24 * 3600 },
         );
 
         const tokenBody = await tokenRes.json() as Record<string, unknown>;
         return Response.json({ ...tokenBody, refresh_token: refreshToken });
       }
 
-      // Refresh Token — Claude uses this automatically when the access token expires
+      // Refresh Token
       if (grantType === 'refresh_token') {
         const refreshToken = params.get('refresh_token');
         if (!refreshToken) {
@@ -201,17 +404,28 @@ export default {
         if (!raw) {
           return Response.json({ error: 'invalid_grant', error_description: 'Refresh token not found or expired' }, { status: 400 });
         }
-        const { clientId, clientSecret } = JSON.parse(raw) as { clientId: string; clientSecret: string };
+        const rt = JSON.parse(raw) as StoredRefreshToken;
 
-        const tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
-        });
+        let tokenRes: Response;
+        if (rt.apiKey) {
+          // Flow B/C
+          tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `grant_type=client_credentials&client_secret=${encodeURIComponent(rt.apiKey)}`,
+          });
+        } else {
+          // Flow A
+          tokenRes = await fetch(`${cqnceBase}/v1/oauth/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `grant_type=client_credentials&client_id=${encodeURIComponent(rt.clientId)}&client_secret=${encodeURIComponent(rt.clientSecret ?? '')}`,
+          });
+        }
 
         if (!tokenRes.ok) {
           await env.OAUTH_CODES.delete(`rt:${refreshToken}`);
-          return Response.json({ error: 'invalid_grant', error_description: 'Client credentials are no longer valid' }, { status: 400 });
+          return Response.json({ error: 'invalid_grant', error_description: 'Credentials are no longer valid' }, { status: 400 });
         }
 
         const tokenBody = await tokenRes.json() as Record<string, unknown>;
@@ -235,7 +449,6 @@ export default {
     }
 
     // ── MCP endpoint ────────────────────────────────────────────────────────
-    // Handle both /mcp and / (some clients omit the path suffix)
     if (pathname.startsWith('/mcp') || pathname === '/') {
       const authHeader = request.headers.get('Authorization') ?? '';
       if (!authHeader.startsWith('Bearer ')) {
@@ -259,10 +472,8 @@ export default {
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       await server.connect(transport);
 
-      // The MCP transport requires both application/json and text/event-stream in
-      // the Accept header. Some MCP clients (including Claude's servers) may omit
-      // text/event-stream, causing the transport to return 406. We normalise the
-      // header here so the transport always sees the full required value.
+      // Normalise Accept header — some clients omit text/event-stream which
+      // causes the transport to return 406.
       const accept = request.headers.get('accept') ?? '';
       const mcpRequest = accept.includes('text/event-stream')
         ? request
@@ -290,4 +501,66 @@ function extractBasicSecret(authHeader: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Returns the HTML binding form that asks the user for their cQnce API key.
+ * Used by both DCR (Flow B) and CIMD (Flow C).
+ */
+function bindingFormResponse(
+  code: string,
+  state: string,
+  origin: string,
+  clientName: string | undefined,
+  errorMessage?: string,
+): Response {
+  const clientLabel = clientName ? `<strong>${escapeHtml(clientName)}</strong>` : 'an application';
+  const errorHtml = errorMessage
+    ? `<div class="error">${escapeHtml(errorMessage)}</div>`
+    : '';
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Connect to cQnce</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 16px rgba(0,0,0,.10); padding: 40px; max-width: 440px; width: 100%; }
+    .logo { font-size: 1.5rem; font-weight: 700; color: #111; margin-bottom: 8px; }
+    h1 { font-size: 1.2rem; font-weight: 600; margin: 0 0 8px; }
+    p { color: #555; font-size: .9rem; margin: 0 0 20px; }
+    label { display: block; font-size: .85rem; font-weight: 500; margin-bottom: 6px; }
+    input[type=text] { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: .95rem; outline: none; transition: border .15s; }
+    input[type=text]:focus { border-color: #0066ff; }
+    .hint { font-size: .8rem; color: #888; margin-top: 6px; }
+    .hint a { color: #0066ff; }
+    button { margin-top: 20px; width: 100%; padding: 12px; background: #0066ff; color: #fff; border: none; border-radius: 8px; font-size: 1rem; font-weight: 500; cursor: pointer; transition: background .15s; }
+    button:hover { background: #0050cc; }
+    .error { background: #fff0f0; border: 1px solid #ffcccc; color: #c00; border-radius: 8px; padding: 10px 14px; font-size: .875rem; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">cQnce</div>
+    <h1>Authorize ${clientLabel}</h1>
+    <p>Enter your cQnce API key to grant access. The key is stored securely and never shared with the requesting application.</p>
+    ${errorHtml}
+    <form method="POST" action="${escapeHtml(origin)}/authorize/bind">
+      <input type="hidden" name="code" value="${escapeHtml(code)}">
+      <input type="hidden" name="state" value="${escapeHtml(state)}">
+      <label for="api_key">cQnce API Key</label>
+      <input type="text" id="api_key" name="api_key" placeholder="cqnce_…" autocomplete="off" spellcheck="false" required>
+      <p class="hint">Find your API key at <a href="https://app.cqnce.com" target="_blank" rel="noopener">app.cqnce.com</a> → Project → Settings.</p>
+      <button type="submit">Authorize</button>
+    </form>
+  </div>
+</body>
+</html>`;
+  return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

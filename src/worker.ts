@@ -482,6 +482,19 @@ export default {
       return transport.handleRequest(mcpRequest);
     }
 
+    if (pathname === '/favicon.ico' || pathname === '/favicon.png') {
+      return Response.redirect('https://cqnce.app/favicon.ico', 301);
+    }
+
+    if (pathname === '/.well-known/mcp.json') {
+      return new Response(JSON.stringify({
+        name: 'cQnce',
+        description: 'Human-in-the-loop authorization for AI agents',
+        icon_url: 'https://cqnce.app/favicon.ico',
+        url: 'https://mcp.cqnce.app/mcp',
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
     return new Response('Not found', { status: 404 });
   },
 };

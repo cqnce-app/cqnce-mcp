@@ -1,0 +1,51 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.cqnce-app/cqnce-mcp",
+  "title": "cQnce MCP",
+  "description": "Add human approval to AI agent workflows. Submit authorization requests, wait for decisions, and track their status through MCP.",
+  "repository": {
+    "url": "https://github.com/cqnce-app/cqnce-mcp",
+    "source": "github"
+  },
+  "version": "0.1.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@cqnce/mcp-server",
+      "version": "0.1.3",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "CQNCE_API_KEY",
+          "description": "Project API key from cQnce",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "CQNCE_ADMIN_TOKEN",
+          "description": "Optional tenant admin JWT for project, agent, team, and callback management tools",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.cqnce.app/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer token using your cQnce project API key",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

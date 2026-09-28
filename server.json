@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cqnce-app/cqnce-mcp",
   "title": "cQnce MCP",
-  "description": "Add human approval to AI agent workflows. Submit authorization requests, wait for decisions, and track their status through MCP.",
+  "description": "Add human approval to AI agent workflows through cQnce authorization tools.",
   "repository": {
     "url": "https://github.com/cqnce-app/cqnce-mcp",
     "source": "github"
